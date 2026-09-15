@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local secrets & per-PR working data (never commit these)
+.env
+ai_review/.work/
+ai_review/.cache/

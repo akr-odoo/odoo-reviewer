@@ -1,0 +1,3 @@
+# ai_review has no hard Python dependencies — it drives the `gh` and `claude` CLIs and
+# uses only the standard library. `rich` is optional and only prettifies console output.
+rich

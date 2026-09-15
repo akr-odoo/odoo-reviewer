@@ -1,0 +1,446 @@
+<title>ai_review — sandboxed AI PR review for Odoo</title>
+<style>
+  :root {
+    --paper:#F4F2F3; --surface:#FFFFFF; --surface-2:#FBF9FB;
+    --ink:#221B26; --muted:#6C6373; --faint:#938A99; --line:#E4DDE4;
+    --accent:#7A4C72; --accent-strong:#5E3A58; --accent-soft:#EFE5EE;
+    --good:#2F7D59; --warn:#B0730C; --crit:#C23B3B; --info:#3A6EA5;
+    --good-bg:#E4F1EA; --warn-bg:#F6ECD9; --crit-bg:#F6E0E0; --info-bg:#E2EBF5;
+    --shadow:0 1px 2px rgba(34,27,38,.05), 0 8px 28px -14px rgba(34,27,38,.18);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --paper:#15121A; --surface:#1E1924; --surface-2:#241E2B;
+      --ink:#ECE5EE; --muted:#A79CAD; --faint:#786E7F; --line:#2E2733;
+      --accent:#CB9FC2; --accent-strong:#E0C2D9; --accent-soft:#2C2130;
+      --good:#6FC79C; --warn:#E0A94A; --crit:#E7817F; --info:#7FA9D8;
+      --good-bg:#17281F; --warn-bg:#2B2213; --crit-bg:#2E1A1A; --info-bg:#18212E;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -16px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="light"]{
+    --paper:#F4F2F3; --surface:#FFFFFF; --surface-2:#FBF9FB;
+    --ink:#221B26; --muted:#6C6373; --faint:#938A99; --line:#E4DDE4;
+    --accent:#7A4C72; --accent-strong:#5E3A58; --accent-soft:#EFE5EE;
+    --good:#2F7D59; --warn:#B0730C; --crit:#C23B3B; --info:#3A6EA5;
+    --good-bg:#E4F1EA; --warn-bg:#F6ECD9; --crit-bg:#F6E0E0; --info-bg:#E2EBF5;
+    --shadow:0 1px 2px rgba(34,27,38,.05), 0 8px 28px -14px rgba(34,27,38,.18);
+  }
+  :root[data-theme="dark"]{
+    --paper:#15121A; --surface:#1E1924; --surface-2:#241E2B;
+    --ink:#ECE5EE; --muted:#A79CAD; --faint:#786E7F; --line:#2E2733;
+    --accent:#CB9FC2; --accent-strong:#E0C2D9; --accent-soft:#2C2130;
+    --good:#6FC79C; --warn:#E0A94A; --crit:#E7817F; --info:#7FA9D8;
+    --good-bg:#17281F; --warn-bg:#2B2213; --crit-bg:#2E1A1A; --info-bg:#18212E;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -16px rgba(0,0,0,.6);
+  }
+
+  *{ box-sizing:border-box; }
+  :root{
+    --mono:ui-monospace,"JetBrains Mono","SFMono-Regular","SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:ui-sans-serif,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  }
+  html{ -webkit-text-size-adjust:100%; }
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  .wrap{ width:100%; max-width:1000px; margin:0 auto; padding:0 24px; }
+  section{ padding:56px 0; border-top:1px solid var(--line); }
+  @media (max-width:640px){ section{ padding:40px 0; } }
+
+  a{ color:var(--accent); text-decoration:none; }
+  a:hover{ text-decoration:underline; }
+  :focus-visible{ outline:2px solid var(--accent); outline-offset:3px; border-radius:2px; }
+
+  .eyebrow{
+    font-family:var(--mono); font-size:12px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--accent); margin:0 0 14px; font-weight:600;
+  }
+  h1,h2,h3{ text-wrap:balance; margin:0; }
+  h2{ font-family:var(--mono); font-size:clamp(20px,3.4vw,26px); font-weight:600; letter-spacing:-.01em; }
+  .lede{ color:var(--muted); max-width:62ch; }
+
+  /* ---------- hero ---------- */
+  .hero{ padding:64px 0 52px; border-top:none; }
+  .hero h1{
+    font-family:var(--mono); font-weight:700; letter-spacing:-.03em;
+    font-size:clamp(44px,9vw,86px); line-height:.95; margin:0 0 6px;
+  }
+  .hero h1 .tilde{ color:var(--accent); }
+  .hero .sub{ font-family:var(--mono); font-size:13px; color:var(--faint); letter-spacing:.02em; margin-bottom:22px; }
+  .hero .thesis{ font-size:clamp(18px,2.6vw,22px); line-height:1.45; max-width:30ch; margin:0 0 30px; }
+  .hero .thesis b{ color:var(--accent-strong); font-weight:600; }
+  .hero-grid{ display:grid; grid-template-columns:1fr 1.05fr; gap:40px; align-items:center; }
+  @media (max-width:800px){ .hero-grid{ grid-template-columns:1fr; gap:28px; } }
+
+  /* ---------- terminal ---------- */
+  .term{
+    background:var(--surface); border:1px solid var(--line); border-radius:8px;
+    box-shadow:var(--shadow); overflow:hidden;
+  }
+  .term-bar{
+    display:flex; align-items:center; gap:7px; padding:11px 14px; border-bottom:1px solid var(--line);
+    background:var(--surface-2);
+  }
+  .dot{ width:11px; height:11px; border-radius:50%; background:var(--line); }
+  .term-bar .name{ font-family:var(--mono); font-size:11px; color:var(--faint); margin-left:8px; letter-spacing:.04em; }
+  .term-body{
+    font-family:var(--mono); font-size:13px; line-height:1.85; padding:16px 18px;
+    overflow-x:auto; white-space:pre; color:var(--ink);
+  }
+  .term-body .p{ color:var(--accent); }
+  .term-body .ok{ color:var(--good); }
+  .term-body .arr{ color:var(--accent); }
+  .term-body .dim{ color:var(--faint); }
+  .term-body .warnv{ color:var(--warn); }
+  .cursor{ display:inline-block; width:8px; height:15px; background:var(--accent); vertical-align:-2px; animation:blink 1.1s steps(2,start) infinite; }
+  @keyframes blink{ 50%{ opacity:0; } }
+  @media (prefers-reduced-motion:reduce){ .cursor{ animation:none; } }
+
+  /* ---------- pipeline sequence ---------- */
+  .stages{ display:grid; grid-template-columns:repeat(4,1fr); gap:0; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--surface); }
+  @media (max-width:760px){ .stages{ grid-template-columns:1fr 1fr; } }
+  @media (max-width:430px){ .stages{ grid-template-columns:1fr; } }
+  .stage{ padding:20px 18px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+  .stage:last-child{ border-right:none; }
+  .stage .num{ font-family:var(--mono); font-size:12px; color:var(--accent); letter-spacing:.1em; }
+  .stage .cmd{ font-family:var(--mono); font-weight:600; font-size:17px; margin:8px 0 6px; }
+  .stage p{ margin:0; font-size:13.5px; color:var(--muted); line-height:1.5; }
+
+  /* ---------- priority ladder (PS Tech) ---------- */
+  .ladder{ display:grid; gap:10px; }
+  .rung{ display:grid; grid-template-columns:auto 1fr; gap:16px; align-items:baseline;
+    background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:14px 18px;
+    transition:border-color .15s ease; }
+  .rung:hover{ border-color:var(--accent); }
+  .rung .rank{ font-family:var(--mono); font-weight:700; color:var(--accent); font-size:16px; font-variant-numeric:tabular-nums; }
+  .rung h3{ font-size:15.5px; margin:0 0 3px; letter-spacing:-.01em; }
+  .rung p{ margin:0; font-size:13.5px; color:var(--muted); line-height:1.5; }
+  .beyond{ display:flex; flex-wrap:wrap; gap:10px; margin-top:18px; }
+  .beyond .b{ font-family:var(--mono); font-size:12px; border:1px solid var(--line); border-radius:999px;
+    padding:8px 15px; background:var(--surface); color:var(--muted); }
+  .beyond .b b{ color:var(--accent); font-weight:600; }
+
+  /* ---------- flow ---------- */
+  .flow{ display:grid; grid-template-columns:1fr auto 1fr auto 1fr; align-items:stretch; gap:14px; }
+  @media (max-width:720px){ .flow{ grid-template-columns:1fr; } .flow .sep{ display:none; } }
+  .flow-step{ background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:18px; }
+  .flow-step .who{ font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase; margin-bottom:8px; }
+  .flow-step.human .who{ color:var(--accent); }
+  .flow-step.ai .who{ color:var(--info); }
+  .flow-step h3{ font-size:16px; margin-bottom:6px; }
+  .flow-step p{ margin:0; font-size:13.5px; color:var(--muted); }
+  .sep{ align-self:center; font-family:var(--mono); color:var(--faint); font-size:20px; }
+
+  /* ---------- feature grid ---------- */
+  .grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); gap:16px; }
+  .card{
+    background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:20px 20px 18px;
+    transition:border-color .15s ease, transform .15s ease;
+  }
+  .card:hover{ border-color:var(--accent); transform:translateY(-2px); }
+  @media (prefers-reduced-motion:reduce){ .card:hover{ transform:none; } }
+  .card .tag{ font-family:var(--mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent); display:flex; align-items:center; gap:9px; margin-bottom:12px; }
+  .card .tag::before{ content:""; width:7px; height:7px; background:var(--accent); border-radius:1px; flex:none; }
+  .card h3{ font-size:17px; margin-bottom:10px; letter-spacing:-.01em; }
+  .card ul{ margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:7px; }
+  .card li{ font-size:13.5px; color:var(--muted); line-height:1.5; padding-left:16px; position:relative; }
+  .card li::before{ content:"›"; position:absolute; left:0; color:var(--accent); font-family:var(--mono); }
+  .card li b{ color:var(--ink); font-weight:600; }
+  code,.k{ font-family:var(--mono); font-size:.86em; background:var(--accent-soft); color:var(--accent-strong); padding:1px 5px; border-radius:4px; }
+
+  /* ---------- finding sample ---------- */
+  .finding{ background:var(--surface); border:1px solid var(--line); border-radius:8px; overflow:hidden; box-shadow:var(--shadow); }
+  .finding-head{ display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:16px 18px; border-bottom:1px solid var(--line); background:var(--surface-2); }
+  .chip{ font-family:var(--mono); font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; padding:3px 9px; border-radius:999px; }
+  .chip.major{ color:var(--warn); background:var(--warn-bg); }
+  .chip.confirmed{ color:var(--good); background:var(--good-bg); }
+  .finding-head .loc{ font-family:var(--mono); font-size:13px; color:var(--muted); }
+  .finding-head .conf{ font-family:var(--mono); font-size:12px; color:var(--faint); margin-left:auto; font-variant-numeric:tabular-nums; }
+  .finding-body{ padding:16px 18px; }
+  .finding-body .title{ font-weight:600; margin:0 0 8px; }
+  .finding-body p{ margin:0 0 14px; color:var(--muted); font-size:14px; }
+  .sugg{ font-family:var(--mono); font-size:12.5px; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .sugg .lbl{ padding:6px 12px; background:var(--good-bg); color:var(--good); font-size:11px; letter-spacing:.08em; text-transform:uppercase; border-bottom:1px solid var(--line); }
+  .sugg pre{ margin:0; padding:10px 12px; overflow-x:auto; white-space:pre; color:var(--ink); }
+  .sugg .add{ color:var(--good); }
+  .legend{ display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
+  .sev{ font-family:var(--mono); font-size:11px; letter-spacing:.06em; text-transform:uppercase; padding:3px 9px; border-radius:999px; }
+  .sev.blocker{ color:var(--crit); background:var(--crit-bg); }
+  .sev.major{ color:var(--warn); background:var(--warn-bg); }
+  .sev.minor{ color:var(--info); background:var(--info-bg); }
+  .sev.nit{ color:var(--muted); background:var(--accent-soft); }
+
+  /* ---------- cheat sheet ---------- */
+  .sheet{ overflow-x:auto; border:1px solid var(--line); border-radius:8px; }
+  table{ border-collapse:collapse; width:100%; font-size:13.5px; min-width:520px; }
+  th,td{ text-align:left; padding:11px 16px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th{ font-family:var(--mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--faint); background:var(--surface-2); font-weight:600; }
+  tbody tr:last-child td{ border-bottom:none; }
+  td:first-child{ font-family:var(--mono); color:var(--accent-strong); white-space:nowrap; }
+  td .muted{ color:var(--muted); }
+
+  /* ---------- setup / footer ---------- */
+  .setup{ display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; }
+  .dep{ border:1px solid var(--line); border-radius:8px; padding:16px 18px; background:var(--surface); }
+  .dep .n{ font-family:var(--mono); font-weight:600; color:var(--accent); font-size:14px; }
+  .dep p{ margin:6px 0 0; font-size:13px; color:var(--muted); }
+  footer{ border-top:1px solid var(--line); padding:28px 0 48px; }
+  footer p{ font-family:var(--mono); font-size:12px; color:var(--faint); margin:0; letter-spacing:.02em; }
+  .mt8{ margin-top:8px; } .lead-row{ display:flex; flex-direction:column; gap:14px; margin-bottom:34px; }
+</style>
+
+<section class="hero wrap">
+  <div class="hero-grid">
+    <div>
+      <p class="eyebrow">Odoo · pull-request review · CLI</p>
+      <h1><span class="tilde">~</span>ai_review</h1>
+      <p class="sub">python -m ai_review · gh + claude · no MCP</p>
+      <p class="thesis">A <b>sandboxed</b>, <b>human-in-the-loop</b> AI code reviewer for GitHub PRs. The AI never touches GitHub or Odoo — only the script does.</p>
+      <div class="legend" aria-hidden="true">
+        <span class="sev blocker">blocker</span>
+        <span class="sev major">major</span>
+        <span class="sev minor">minor</span>
+        <span class="sev nit">nit</span>
+      </div>
+    </div>
+    <div class="term" role="img" aria-label="Terminal showing the ai_review pipeline: doctor, run, and push commands">
+      <div class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="name">zsh — ai_review</span></div>
+<div class="term-body"><span class="p">$</span> python -m ai_review doctor
+  <span class="ok">✓</span> gh authenticated   <span class="ok">✓</span> claude CLI   <span class="ok">✓</span> Odoo (uid 1821937)
+
+<span class="p">$</span> python -m ai_review run 123456 <span class="dim">-R odoo/odoo</span>
+  <span class="arr">→</span> fetch   diff + task [t-284…] + tests + context
+  <span class="arr">→</span> review  Opus · critic pass · <span class="warnv">7 findings, 2 suppressed</span>
+
+<span class="p">$</span> python -m ai_review push 123456 <span class="dim">-R odoo/odoo</span>
+  <span class="ok">✓</span> draft review posted — you submit it <span class="cursor"></span></div>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <p class="eyebrow">The pipeline</p>
+  <div class="lead-row">
+    <h2>Four commands, run in order</h2>
+    <p class="lede">Staged on purpose: each step writes a file you can inspect before the next one runs. Nothing reaches GitHub until you say so.</p>
+  </div>
+  <div class="stages">
+    <div class="stage">
+      <div class="num">01</div>
+      <div class="cmd">doctor</div>
+      <p>Preflight: verifies <span class="k">gh</span> auth, the <span class="k">claude</span> CLI, and a live Odoo login.</p>
+    </div>
+    <div class="stage">
+      <div class="num">02</div>
+      <div class="cmd">fetch</div>
+      <p>Builds the context bundle — diff, Odoo task, tests, full files, references, house rules.</p>
+    </div>
+    <div class="stage">
+      <div class="num">03</div>
+      <div class="cmd">review</div>
+      <p>Runs Claude + a skeptical critic pass → editable findings with confidence &amp; verdict.</p>
+    </div>
+    <div class="stage">
+      <div class="num">04</div>
+      <div class="cmd">push</div>
+      <p>Posts one <b>draft</b> review (summary + inline comments) for you to submit.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <p class="eyebrow">By design</p>
+  <div class="lead-row">
+    <h2>Human → AI → human</h2>
+    <p class="lede">The AI is wedged between two humans — it never gets the first word or the last.</p>
+  </div>
+  <div class="flow">
+    <div class="flow-step human">
+      <div class="who">Human first</div>
+      <h3>A person reviews &amp; comments</h3>
+      <p><span class="k">review</span> refuses to run until a real human (not a bot, not the author) has weighed in.</p>
+    </div>
+    <div class="sep">→</div>
+    <div class="flow-step ai">
+      <div class="who">AI on top</div>
+      <h3>Reinforces or challenges</h3>
+      <p>Reads the existing comments, backs the right ones, pushes back on the wrong ones, adds its own.</p>
+    </div>
+    <div class="sep">→</div>
+    <div class="flow-step human">
+      <div class="who">Human last</div>
+      <h3>You have the final say</h3>
+      <p>Edit <span class="k">review.json</span>, then submit the draft — nothing posts without your click.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <p class="eyebrow">Calibrated for PS Tech</p>
+  <div class="lead-row">
+    <h2>Reviews customizations, not core</h2>
+    <p class="lede">The odoo-review guidelines (all sibling skills are fetched and fed in) target contributions to Odoo <em>core</em>. By default the review is recalibrated for customer implementations built on top of Odoo — in priority order.</p>
+  </div>
+  <div class="ladder">
+    <div class="rung"><span class="rank">1</span><div><h3>Maintainability</h3><p>Readable, minimal surface, upgrade-safe — inherit &amp; extend (<span class="k">_inherit</span> / <span class="k">super()</span> / xpath), never patch core.</p></div></div>
+    <div class="rung"><span class="rank">2</span><div><h3>Correctness</h3><p>Does what the linked task / SOW asks, edge cases included.</p></div></div>
+    <div class="rung"><span class="rank">3</span><div><h3>Odoo-like, minimal code</h3><p>Standard config · Studio · server actions · existing modules — before any bespoke Python.</p></div></div>
+    <div class="rung"><span class="rank">4</span><div><h3>Performance</h3><p>At the customer's real data volume — no N+1, no queries in loops.</p></div></div>
+    <div class="rung"><span class="rank">5</span><div><h3>Security</h3><p>Access rights, record rules, careful <span class="k">sudo()</span> — genuine holes always flagged.</p></div></div>
+  </div>
+  <div class="beyond">
+    <span class="b"><b>Challenges</b> the business need</span>
+    <span class="b"><b>Proposes</b> a better data model</span>
+    <span class="b"><b>Footprint &amp; ROI</b> verdict — best code is no code</span>
+  </div>
+</section>
+
+<section class="wrap">
+  <p class="eyebrow">Capabilities</p>
+  <div class="lead-row">
+    <h2>What's in the box</h2>
+  </div>
+  <div class="grid">
+    <div class="card">
+      <div class="tag">Sandbox &amp; privacy</div>
+      <h3>The AI is locked out</h3>
+      <ul>
+        <li>No MCP, every built-in tool disabled, empty working dir</li>
+        <li><b>Only the script</b> talks to GitHub &amp; Odoo</li>
+        <li>Sandbox audit via <span class="k">permission_denials</span></li>
+        <li>Runs on your own <span class="k">claude</span> login — no extra billing</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="tag">Context it gathers</div>
+      <h3>More than the diff</h3>
+      <ul>
+        <li>Odoo <b>task description + chatter</b> from the <span class="k">[task_id]</span></li>
+        <li>The touched modules' <b>tests</b> as API reference</li>
+        <li><b>Full changed files</b> + target-branch callers</li>
+        <li>odoo-review <b>house rules + all sibling guidelines</b> at the base branch</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="tag">Review quality</div>
+      <h3>Signal over noise</h3>
+      <ul>
+        <li><b>Critic pass</b> refutes each finding → verdict</li>
+        <li>Confidence threshold suppresses weak findings</li>
+        <li>Dedups against comments already on the line</li>
+        <li>Every finding anchored to a real diff line</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="tag">Strategies</div>
+      <h3>Scale to the PR</h3>
+      <ul>
+        <li><span class="k">whole</span> — one pass over the PR</li>
+        <li><span class="k">per-task</span> — group by <span class="k">[task_id]</span> + synthesis</li>
+        <li><span class="k">per-commit</span> — one agent per commit</li>
+        <li><span class="k">--incremental</span> — only new commits since last run</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="tag">Delivery</div>
+      <h3>Draft, not drive-by</h3>
+      <ul>
+        <li>One review: summary + inline comments</li>
+        <li><span class="k">```suggestion```</span> blocks for one-click fixes</li>
+        <li><span class="k">--dry-run</span>, confirm prompt, draft default</li>
+        <li>One-pending-review guard, hidden idempotency marker</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="tag">Security hardening</div>
+      <h3>Hostile PR text, handled</h3>
+      <ul>
+        <li>Strips zero-width / bidi / control characters</li>
+        <li>Wraps PR text in <span class="k">&lt;&lt;&lt;UNTRUSTED&gt;&gt;&gt;</span> fences</li>
+        <li>System prompt: data, never instructions</li>
+        <li>Covers the diff &amp; code, not just metadata</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <p class="eyebrow">Output</p>
+  <div class="lead-row">
+    <h2>What a finding looks like</h2>
+    <p class="lede">Severity, confidence, and the critic's verdict are carried in the shape, so the ones that matter read at a glance.</p>
+  </div>
+  <div class="finding">
+    <div class="finding-head">
+      <span class="chip major">standard-alternative</span>
+      <span class="chip confirmed">confirmed · 0.95</span>
+      <span class="loc">custom_sale/models/sale_order.py:48</span>
+      <span class="conf">finder 0.88</span>
+    </div>
+    <div class="finding-body">
+      <p class="title">120 lines of custom discount logic Odoo already does with a pricelist</p>
+      <p>This <code>@api.onchange</code> re-implements tiered discounts by hand. Standard <b>pricelist rules</b> cover the task's requirement with zero Python — less to maintain and upgrade-safe. Consider dropping the override entirely.</p>
+      <div class="sugg">
+        <div class="lbl">footprint &amp; roi</div>
+        <pre>−120 lines custom · replaceable by config · <span class="add">recommend: remove</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <p class="eyebrow">Reference</p>
+  <div class="lead-row">
+    <h2>Command cheat sheet</h2>
+    <p class="lede"><span class="k">&lt;pr&gt;</span> = a PR URL, <span class="k">owner/repo#123</span>, or a bare number with <span class="k">-R owner/repo</span>.</p>
+  </div>
+  <div class="sheet">
+    <table>
+      <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td>doctor</td><td>Check <span class="muted">gh / claude / Odoo</span> setup (preflight)</td></tr>
+        <tr><td>fetch &lt;pr&gt;</td><td>Pull the PR + all context into <span class="muted">bundle.json</span></td></tr>
+        <tr><td>review &lt;pr&gt;</td><td>Run the AI review → <span class="muted">review.json + review.md</span></td></tr>
+        <tr><td>push &lt;pr&gt;</td><td>Post a <b>draft</b> GitHub review (edit review.json first)</td></tr>
+        <tr><td>run &lt;pr&gt;</td><td>fetch + review <span class="muted">(stops before push)</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="sheet" style="margin-top:16px">
+    <table>
+      <thead><tr><th>Flag</th><th>On</th><th>Effect</th></tr></thead>
+      <tbody>
+        <tr><td>--strategy</td><td class="muted">review</td><td>whole · per-task · per-commit</td></tr>
+        <tr><td>--no-verify</td><td class="muted">review</td><td>skip the skeptical critic pass</td></tr>
+        <tr><td>--min-confidence</td><td class="muted">review</td><td>suppress findings below 0–1 (default 0.6)</td></tr>
+        <tr><td>--incremental</td><td class="muted">review</td><td>only commits since the last review</td></tr>
+        <tr><td>--force</td><td class="muted">review</td><td>run even with no prior human review</td></tr>
+        <tr><td>--model</td><td class="muted">review</td><td>override the model (default: opus)</td></tr>
+        <tr><td>--no-context / --no-tests</td><td class="muted">fetch</td><td>skip full-file/reference or test fetching</td></tr>
+        <tr><td>--dry-run</td><td class="muted">push</td><td>print the payload, post nothing</td></tr>
+        <tr><td>--separate-summary</td><td class="muted">push</td><td>post the summary as its own comment</td></tr>
+        <tr><td>--submit</td><td class="muted">push</td><td>COMMENT · APPROVE · REQUEST_CHANGES (skips draft)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="wrap">
+  <p class="eyebrow">Setup</p>
+  <div class="lead-row">
+    <h2>Three things to install</h2>
+    <p class="lede">Then <span class="k">python -m ai_review doctor</span> confirms a teammate's machine is ready.</p>
+  </div>
+  <div class="setup">
+    <div class="dep"><div class="n">gh</div><p>GitHub CLI — <span class="k">gh auth login</span>. Carries your own auth.</p></div>
+    <div class="dep"><div class="n">claude</div><p>Claude Code — log in once, or set <span class="k">ANTHROPIC_API_KEY</span>.</p></div>
+    <div class="dep"><div class="n">ODOO_*</div><p>URL / DB / user / API key for task enrichment, via <span class="k">.env</span> or shell.</p></div>
+  </div>
+</section>
+
+<footer class="wrap">
+  <p>ai_review · staged · sandboxed · human-in-the-loop · built for odoo/odoo-style PRs</p>
+</footer>
