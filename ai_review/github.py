@@ -138,6 +138,22 @@ def fetch_pr(ref: PRRef) -> dict[str, Any]:
         }
         for c in raw_comments
     ]
+    # Draft (pending) review comments: GitHub omits these from pulls/N/comments until the review
+    # is submitted, but the review's author can still read them. Include them so the human-first
+    # gate counts the reviewer's own drafts and the AI builds on (and doesn't repeat) them.
+    for rev in _gh_json(["api", f"repos/{ref.slug}/pulls/{num}/reviews", "--paginate"]) or []:
+        if rev.get("state") != "PENDING":
+            continue
+        drafts = _gh_json(["api", f"repos/{ref.slug}/pulls/{num}/reviews/{rev['id']}/comments"]) or []
+        for c in drafts:
+            inline_comments.append({
+                "path": c.get("path"),
+                "line": c.get("line") or c.get("original_line"),
+                "side": c.get("side", "RIGHT"),
+                "user": (c.get("user") or {}).get("login"),
+                "body": c.get("body", ""),
+                "draft": True,
+            })
     return {
         "ref": {"owner": ref.owner, "repo": ref.repo, "number": ref.number},
         "meta": meta,
@@ -177,16 +193,26 @@ def human_reviewers(bundle: dict[str, Any], marker: str) -> list[str]:
     return sorted(logins)
 
 
-def pending_review_exists(ref: PRRef, login: str) -> bool:
-    """GitHub allows only one PENDING review per user per PR; detect it so re-runs
-    warn instead of erroring."""
-    reviews = _gh_json(
-        ["api", f"repos/{ref.slug}/pulls/{ref.number}/reviews", "--paginate"]
+def pending_review(ref: PRRef, login: str) -> dict[str, Any] | None:
+    """The current user's existing PENDING (draft) review on this PR, or None. GitHub allows
+    only one pending review per user, so the AI appends to this one instead of creating a second."""
+    reviews = _gh_json(["api", f"repos/{ref.slug}/pulls/{ref.number}/reviews", "--paginate"]) or []
+    for r in reviews:
+        if r.get("state") == "PENDING" and (r.get("user") or {}).get("login") == login:
+            return r
+    return None
+
+
+def add_comment_to_pending_review(review_node_id: str, path: str, line: int, side: str, body: str) -> None:
+    """Append one inline comment to an existing pending review (GraphQL), so the human's draft
+    and the AI's comments end up in a single review the human submits."""
+    mutation = (
+        "mutation($id:ID!,$path:String!,$line:Int!,$side:DiffSide!,$body:String!){"
+        "addPullRequestReviewThread(input:{pullRequestReviewId:$id,path:$path,"
+        "line:$line,side:$side,body:$body}){thread{id}}}"
     )
-    return any(
-        r.get("state") == "PENDING" and (r.get("user") or {}).get("login") == login
-        for r in reviews
-    )
+    _gh(["api", "graphql", "-f", f"query={mutation}", "-f", f"id={review_node_id}",
+         "-f", f"path={path}", "-F", f"line={line}", "-f", f"side={side}", "-f", f"body={body}"])
 
 
 def post_review(

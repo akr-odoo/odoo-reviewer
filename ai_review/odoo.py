@@ -81,21 +81,21 @@ class OdooClient:
         """Read tasks + their chatter notes. Missing/forbidden ids come back with .error."""
         if not task_ids:
             return []
-        records = self._call("project.task", "read", task_ids, {"fields": TASK_FIELDS})
+        records = self._call("project.task", "read", task_ids, fields=TASK_FIELDS)
         found = {r["id"]: r for r in records}
 
         # Batch-read every referenced message in one go, then group per task.
         all_msg_ids = [mid for r in records for mid in r.get("message_ids", [])]
         messages: dict[int, dict] = {}
         if all_msg_ids:
-            for m in self._call("mail.message", "read", all_msg_ids, {"fields": MESSAGE_FIELDS}):
+            for m in self._call("mail.message", "read", all_msg_ids, fields=MESSAGE_FIELDS):
                 messages[m["id"]] = m
 
         # Resolve assignee names (user_ids is many2many -> bare ids) in one batch.
         all_user_ids = [uid for r in records for uid in (r.get("user_ids") or [])]
         user_names: dict[int, str] = {}
         if all_user_ids:
-            for u in self._call("res.users", "read", list(set(all_user_ids)), {"fields": ["name"]}):
+            for u in self._call("res.users", "read", list(set(all_user_ids)), fields=["name"]):
                 user_names[u["id"]] = u.get("name", "")
 
         tasks: list[Task] = []

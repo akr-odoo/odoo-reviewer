@@ -365,22 +365,42 @@ def cmd_push(args: argparse.Namespace) -> int:
             out(summary_body)
         return 0
 
-    # Idempotency: one pending review per user per PR.
+    # If you already have a pending (draft) review, GitHub won't let us open a second one — so we
+    # append the AI's comments into YOUR draft, and you submit one combined human+AI review.
+    pend = None
     try:
         login = github.auth_login()
-        if event is None and github.pending_review_exists(ref, login):
-            out("[yellow]⚠ You already have a pending review on this PR. "
-                "Submit/dismiss it in GitHub before posting a new draft.[/yellow]")
-            return 1
+        if event is None:
+            pend = github.pending_review(ref, login)
     except Exception as exc:  # noqa: BLE001 — non-fatal preflight
         out(f"[yellow]⚠ Could not check existing reviews: {exc}[/yellow]")
 
     if not args.yes:
-        where = "a DRAFT (pending) review" if event is None else f"a submitted review ({event})"
-        resp = input(f"Post {where} to {ref.slug}#{ref.number}? [y/N] ").strip().lower()
+        if pend is not None:
+            where = "add these comments into your existing DRAFT review"
+        elif event is None:
+            where = "post a new DRAFT (pending) review"
+        else:
+            where = f"post a submitted review ({event})"
+        resp = input(f"{where.capitalize()} on {ref.slug}#{ref.number}? [y/N] ").strip().lower()
         if resp not in ("y", "yes"):
             out("Aborted.")
             return 1
+
+    if pend is not None:
+        node = pend.get("node_id")
+        added = 0
+        for f in review.inline:
+            try:
+                github.add_comment_to_pending_review(node, f.path, f.line, f.side, f.comment_body())
+                added += 1
+            except Exception as exc:  # noqa: BLE001 — keep going; report the ones that fail
+                out(f"  [yellow]⚠ couldn't add comment on {f.path}:{f.line}: {str(exc).splitlines()[0]}[/yellow]")
+        out(f"[green]Added[/green] {added} AI comment(s) to your existing draft review.")
+        c = github.post_issue_comment(ref, body)
+        out(f"[green]Posted[/green] summary comment {c.get('html_url')}")
+        out("  Your draft now holds your comments + the AI's — submit it in GitHub when ready.")
+        return 0
 
     result = github.post_review(ref, commit_id, review_body, comments, event=event)
     out(f"[green]Posted[/green] review id {result.get('id')} (state: {result.get('state')})")
