@@ -50,17 +50,19 @@ Inspect:
 - Maintainability: structure, naming, dead code, duplication, over-engineering, upgrade-safety.
 - Intent: does the code actually match the linked task/SOW and the commit message? Flag scope gaps.
 
-For every issue give the file + line, the defect, a concrete failure scenario, and a proposed fix
-(prefer the lowest-code / most standard fix). Favor a few high-signal findings over noise.
+For every issue: file + line, the defect in one line, and the fix (prefer the lowest-code / most
+standard). Keep it terse. Favor a few high-signal findings over noise.
 """
 
 OUTPUT_CONTRACT = f"""\
 OUTPUT FORMAT — this is strict and non-negotiable:
 - You have NO tools. Do not attempt to read files, run commands, or call functions.
 - Respond with a SINGLE JSON object and nothing else (no prose, no markdown fence).
+- BE MINIMAL. Reviewers ignore walls of text. Write terse, skimmable comments: no greetings, no
+  praise, no restating the diff, no hedging. Prefer a few high-value findings over many small ones.
 - Schema:
   {{
-    "summary": "<markdown overview: what the PR does + overall assessment + cross-cutting notes, and END with a **Footprint & ROI** verdict — how much custom code it adds, whether that's justified, and the lowest-code / most-standard alternative>",
+    "summary": "<=3 short sentences: the overall call + the most important issue, then ONE **Footprint & ROI** line (code added vs. value + lowest-code alternative). Do NOT recap what the PR does.>",
     "findings": [
       {{
         "path": "<repo-relative file path exactly as in the diff>",
@@ -69,8 +71,8 @@ OUTPUT FORMAT — this is strict and non-negotiable:
         "side": "RIGHT" | "LEFT",   // RIGHT = new/added/context line, LEFT = removed line
         "severity": {list(SEVERITIES)},
         "category": "<short slug e.g. maintainability, correctness, standard-alternative, over-engineering, modeling, business-need, performance, security, orm, data-safety, tests, response>",
-        "title": "<one-line summary of the issue>",
-        "body": "<the defect + a concrete failure scenario + the fix, in markdown>",
+        "title": "<the issue in <=10 words>",
+        "body": "<1-2 sentences max: the defect and the fix. No preamble, no restating the code.>",
         "suggestion": "<optional: exact replacement code for that single line/block, or omit>",
         "confidence": <float 0.0-1.0: how sure you are this is a real, correct issue>
       }}

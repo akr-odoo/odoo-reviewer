@@ -396,9 +396,12 @@ def cmd_push(args: argparse.Namespace) -> int:
                 added += 1
             except Exception as exc:  # noqa: BLE001 — keep going; report the ones that fail
                 out(f"  [yellow]⚠ couldn't add comment on {f.path}:{f.line}: {str(exc).splitlines()[0]}[/yellow]")
-        out(f"[green]Added[/green] {added} AI comment(s) to your existing draft review.")
-        c = github.post_issue_comment(ref, body)
-        out(f"[green]Posted[/green] summary comment {c.get('html_url')}")
+        out(f"[green]Added[/green] {added} AI comment(s) to your existing draft review (still private).")
+        if args.separate_summary:   # only publish the summary when explicitly asked
+            c = github.post_issue_comment(ref, body)
+            out(f"[green]Posted[/green] summary comment {c.get('html_url')}")
+        else:
+            out("  Summary (incl. Footprint & ROI) is in review.md — paste it as your review body on submit.")
         out("  Your draft now holds your comments + the AI's — submit it in GitHub when ready.")
         return 0
 
