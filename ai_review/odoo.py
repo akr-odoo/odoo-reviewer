@@ -13,6 +13,7 @@ the Task and never blocks the review.
 """
 from __future__ import annotations
 
+import base64
 import ssl
 import xmlrpc.client
 from html.parser import HTMLParser
@@ -27,6 +28,19 @@ ssl._create_default_https_context = ssl._create_unverified_context
 TASK_FIELDS = ["name", "description", "stage_id", "project_id", "user_ids", "message_ids"]
 MESSAGE_FIELDS = ["author_id", "date", "body", "message_type"]
 MAX_NOTES_PER_TASK = 40
+
+ATTACHMENT_FIELDS = ["name", "mimetype", "file_size", "type", "res_id", "url"]
+MAX_ATTACHMENTS_PER_TASK = 20
+MAX_ATTACHMENT_TEXT = 20_000      # per text attachment
+MAX_ATTACHMENT_TOTAL = 40_000     # total inlined attachment text per task
+
+
+def _is_text_mime(mime: str) -> bool:
+    mime = (mime or "").lower()
+    return mime.startswith("text/") or mime in (
+        "application/json", "application/xml", "application/javascript",
+        "application/x-python", "application/x-sql", "application/csv",
+    )
 
 
 class _TextExtractor(HTMLParser):
@@ -98,6 +112,8 @@ class OdooClient:
             for u in self._call("res.users", "read", list(set(all_user_ids)), fields=["name"]):
                 user_names[u["id"]] = u.get("name", "")
 
+        attachments = self._fetch_attachments(task_ids)
+
         tasks: list[Task] = []
         for tid in task_ids:
             rec = found.get(tid)
@@ -123,9 +139,44 @@ class OdooClient:
                     project=(rec.get("project_id") or [None, ""])[1] if rec.get("project_id") else "",
                     assignees=[user_names.get(uid, str(uid)) for uid in (rec.get("user_ids") or [])],
                     notes=notes[-MAX_NOTES_PER_TASK:],
+                    attachments=attachments.get(tid, []),
                 )
             )
         return tasks
+
+    def _fetch_attachments(self, task_ids: list[int]) -> dict[int, list[dict]]:
+        """Attachments linked to each task (direct + chatter). Text files are inlined (decoded);
+        images/binaries are listed by name/type only — the text-only reviewer can't see pixels."""
+        domain = [["res_model", "=", "project.task"], ["res_id", "in", task_ids]]
+        try:
+            recs = self._call("ir.attachment", "search_read", domain,
+                              fields=ATTACHMENT_FIELDS, order="id desc", limit=200)
+        except Exception:  # noqa: BLE001 — attachments are best-effort
+            return {}
+
+        by_task: dict[int, list[dict]] = {}
+        inlined: dict[int, int] = {}
+        for a in recs or []:
+            tid = a.get("res_id")
+            bucket = by_task.setdefault(tid, [])
+            if len(bucket) >= MAX_ATTACHMENTS_PER_TASK:
+                continue
+            att = {"name": a.get("name", ""), "mimetype": a.get("mimetype", ""),
+                   "size": a.get("file_size", 0), "text": ""}
+            used = inlined.get(tid, 0)
+            if (_is_text_mime(a.get("mimetype", "")) and a.get("type") == "binary"
+                    and used < MAX_ATTACHMENT_TOTAL):
+                blob = self._call("ir.attachment", "read", [a["id"]], fields=["datas"])
+                data = (blob[0].get("datas") if blob else None)
+                if data:
+                    try:
+                        text = base64.b64decode(data).decode("utf-8", "replace")[:MAX_ATTACHMENT_TEXT]
+                        att["text"] = text
+                        inlined[tid] = used + len(text)
+                    except (ValueError, TypeError):
+                        pass
+            bucket.append(att)
+        return by_task
 
 
 def enrich_tasks(task_ids: list[int], creds: OdooCreds) -> tuple[list[Task], str]:

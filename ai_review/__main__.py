@@ -15,6 +15,7 @@ The AI only ever sees text; only this tool touches GitHub and Odoo.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -49,6 +50,11 @@ def _review_paths(ref: PRRef):
 
 def _state_path(ref: PRRef):
     return ref.work_dir() / "state.json"
+
+
+def _is_version(branch: str | None) -> bool:
+    """True for Odoo version branches like '19.0' or 'saas-19.3' (usable against odoo/odoo)."""
+    return bool(branch) and bool(re.fullmatch(r"(saas~?-?)?\d+\.\d+", branch))
 
 
 def _is_duplicate(f: Finding, existing: list[dict]) -> bool:
@@ -157,6 +163,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         out(f"  {mark} {label}" + (f" — {detail}" if detail else ""))
 
     out("ai_review doctor\n")
+    from .config import LOADED_DOTENV
+    out(f"  env file: {LOADED_DOTENV or 'none found (using shell environment)'}\n")
     try:
         login = github.auth_login()
         check("gh authenticated", True, f"logged in as {login}")
@@ -186,6 +194,9 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     out(f"Fetching {ref.slug}#{ref.number} …")
     bundle = github.fetch_pr(ref)
     out(f"  diff: {len(bundle['diff'])} bytes · task ids: {bundle['task_ids'] or 'none'}")
+    if bundle.get("stack"):
+        chain = " → ".join(f"#{p['number']}" for p in bundle["stack"])
+        out(f"  [cyan]PR stack detected:[/cyan] {chain} (reviewing this PR's diff only)")
 
     detail, total = github.fetch_commits_detail(ref, bundle["meta"])
     bundle["commits_detail"] = detail
@@ -214,12 +225,18 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
     if args.no_tests:
         bundle["module_tests"] = {}
+        bundle["standard_tests"] = {}
     else:
         # Base branch: always in the base repo (a fork's head commit is not) and carries
         # the existing tests we want as API reference.
         tests = context.fetch_module_tests(ref, files, base)
         bundle["module_tests"] = tests
         out(f"  module tests: {len(tests)} file(s)" + (f" — {', '.join(tests)}" if tests else ""))
+        # Standard Odoo tests for the modules this custom code depends on / extends.
+        over = args.odoo_version or (base if _is_version(base) else "master")
+        std = context.fetch_standard_tests(ref, files, bundle["diff"], head_sha, over)
+        bundle["standard_tests"] = std
+        out(f"  standard Odoo tests ({over}): {len(std)} file(s)")
 
     if args.no_context:
         bundle["full_files"] = {}
@@ -446,9 +463,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_fetch_flags(sp):
         sp.add_argument("--no-tests", action="store_true",
-                        help="skip fetching the touched modules' test files")
+                        help="skip fetching custom-module + standard-Odoo test files")
         sp.add_argument("--no-context", action="store_true",
                         help="skip fetching full changed files + target-branch references")
+        sp.add_argument("--odoo-version", default=None,
+                        help="Odoo branch for standard-module tests (default: base branch if it "
+                             "looks like a version, else 'master')")
 
     def add_review_flags(sp):
         sp.add_argument("--model", default=claude.DEFAULT_MODEL,

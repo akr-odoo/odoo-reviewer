@@ -51,9 +51,20 @@ MARKER = "<!-- ai_review -->"
 # --------------------------------------------------------------------------- #
 # .env loading (tiny, dependency-free)
 # --------------------------------------------------------------------------- #
+LOADED_DOTENV: str | None = None   # path of the .env that was loaded (for `doctor`)
+
+
 def load_dotenv() -> None:
-    """Populate os.environ from the first .env found, without overriding real env."""
-    for candidate in (PACKAGE_DIR / ".env", Path.cwd() / ".env"):
+    """Load the first .env found (cwd, package dir, repo root). A FILLED-IN value in .env wins
+    over a shell export so the file is the source of truth; an empty entry never clobbers a real
+    env var. (Previously a shell export always beat .env, which was surprising.)"""
+    global LOADED_DOTENV
+    seen: set = set()
+    for candidate in (Path.cwd() / ".env", PACKAGE_DIR / ".env", PACKAGE_DIR.parent / ".env"):
+        candidate = candidate.resolve()
+        if candidate in seen:
+            continue
+        seen.add(candidate)
         if not candidate.is_file():
             continue
         for raw in candidate.read_text().splitlines():
@@ -62,7 +73,11 @@ def load_dotenv() -> None:
                 continue
             key, _, value = line.partition("=")
             key, value = key.strip(), value.strip().strip('"').strip("'")
-            os.environ.setdefault(key, value)
+            if value:
+                os.environ[key] = value          # filled .env value wins over the shell
+            else:
+                os.environ.setdefault(key, value)
+        LOADED_DOTENV = str(candidate)
         return
 
 

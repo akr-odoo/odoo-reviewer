@@ -43,6 +43,7 @@ class Task:
     project: str = ""
     assignees: list[str] = field(default_factory=list)
     notes: list[TaskNote] = field(default_factory=list)
+    attachments: list[dict] = field(default_factory=list)  # {name, mimetype, size, text}
     error: str = ""                # populated when the task could not be read
 
     def to_dict(self) -> dict[str, Any]:

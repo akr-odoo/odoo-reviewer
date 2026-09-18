@@ -120,6 +120,48 @@ def fetch_commit_diff(slug: str, sha: str) -> str:
     return "\n".join(chunks)
 
 
+def fetch_stack(ref: PRRef, meta: dict[str, Any]) -> list[dict[str, Any]]:
+    """Detect a stacked-PR chain this PR belongs to (GitHub's stacked PRs / manual stacks).
+
+    A PR is stacked when its base branch is the head branch of another open PR, rather than a
+    long-lived branch. We walk parents (down the base chain) and children (PRs based on this one)
+    and return the ordered chain, base→head, with the current PR marked. Returns [] if not stacked.
+    """
+    base, head = meta.get("baseRefName"), meta.get("headRefName")
+    try:
+        prs = _gh_json(["pr", "list", "-R", ref.slug, "--state", "open", "--limit", "200",
+                        "--json", "number,title,headRefName,baseRefName,url"]) or []
+    except GhError:
+        return []
+    by_head = {p["headRefName"]: p for p in prs}
+    by_base: dict[str, list] = {}
+    for p in prs:
+        by_base.setdefault(p["baseRefName"], []).append(p)
+
+    seen = {ref.number}
+    parents: list[dict] = []
+    b = base
+    while b in by_head and by_head[b]["number"] not in seen:
+        p = by_head[b]; seen.add(p["number"]); parents.insert(0, p); b = p["baseRefName"]
+
+    children: list[dict] = []
+    h = head
+    while h in by_base:
+        nxt = [p for p in by_base[h] if p["number"] not in seen]
+        if not nxt:
+            break
+        p = nxt[0]; seen.add(p["number"]); children.append(p); h = p["headRefName"]
+
+    if not parents and not children:
+        return []
+    current = {"number": ref.number, "title": meta.get("title", ""),
+               "headRefName": head, "baseRefName": base, "url": meta.get("url", "")}
+    chain = parents + [current] + children
+    for p in chain:
+        p["current"] = p["number"] == ref.number
+    return chain
+
+
 def fetch_pr(ref: PRRef) -> dict[str, Any]:
     num = str(ref.number)
     meta = _gh_json(["pr", "view", num, "-R", ref.slug, "--json", ",".join(_PR_FIELDS)])
@@ -160,6 +202,7 @@ def fetch_pr(ref: PRRef) -> dict[str, Any]:
         "diff": diff,
         "inline_comments": inline_comments,
         "task_ids": extract_task_ids(meta),
+        "stack": fetch_stack(ref, meta),
     }
 
 

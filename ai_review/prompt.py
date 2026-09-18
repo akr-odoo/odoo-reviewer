@@ -162,6 +162,15 @@ def _format_tasks(tasks: list[dict[str, Any]]) -> str:
             for n in t["notes"]:
                 block.append(f"- ({_clean(n.get('date',''), 40)}) {_clean(n.get('author',''), 120)}: "
                              f"{_clean(n.get('body',''), 1500)}")
+        if t.get("attachments"):
+            block.append("\n**Attachments:**")
+            for a in t["attachments"]:
+                name, mime = _clean(a.get("name", ""), 160), a.get("mimetype", "")
+                if a.get("text"):
+                    block.append(f"- {name} ({mime}):\n```\n{_clean(a['text'], 8000)}\n```")
+                else:
+                    block.append(f"- {name} ({mime}, {a.get('size', 0)} bytes) "
+                                 "— binary/image, content not shown")
         out.append("\n".join(block))
     return sanitize.fence("ODOO TICKETS", "\n\n".join(out))
 
@@ -200,6 +209,22 @@ comments, say so in its body (quote the point you're responding to) and, where i
 diff line, anchor it there so it threads naturally."""
 
 
+def _format_stack(stack: list[dict[str, Any]], current_number: int) -> str:
+    if not stack or len(stack) < 2:
+        return ""
+    rows = []
+    for p in stack:
+        mark = " ← THIS PR" if p.get("number") == current_number else ""
+        rows.append(f"- #{p['number']} {_clean(p.get('title',''), 120)}  "
+                    f"[{p.get('baseRefName')} ← {p.get('headRefName')}]{mark}")
+    return (
+        "## Part of a PR stack (base → head)\n"
+        "This PR is one of a stack. Review ONLY this PR's diff; changes in the PRs BELOW it are its "
+        "base and are assumed already reviewed — don't re-flag them. Changes in PRs ABOVE depend on "
+        "this one. Keep that dependency in mind.\n\n" + "\n".join(rows) + "\n"
+    )
+
+
 def _content(bundle: dict[str, Any], *, diff: str, commit_lines: str,
              tasks: list[dict[str, Any]], preamble: str = "") -> str:
     """Shared body for the whole-PR and per-group prompts. Line numbers in findings must
@@ -218,6 +243,7 @@ Title: {_clean(meta.get('title',''), 300)}
 Author: {_clean(author, 120)}
 Base: {_clean(meta.get('baseRefName',''), 120)}  Head: {_clean(meta.get('headRefName',''), 120)}
 
+{_format_stack(bundle.get('stack', []), bundle['ref']['number'])}
 ## PR description
 {pr_body}
 
@@ -241,11 +267,14 @@ Check whether this change breaks or is inconsistent with these callers/consumers
 
 {_format_code_files(bundle.get('referencing_files', {}), 'python')}
 
-## Tests of the touched modules — reference for the expected API / usage patterns
-Use these to judge whether the change creates/modifies/uses models and actions the way the
-module's own tests show it should. Do NOT comment on these files; they are context only.
-
+## Tests in the touched custom module(s) — reference only
 {_format_module_tests(bundle.get('module_tests', {}))}
+
+## Standard Odoo tests for the modules this code extends — reference for correct API usage
+How Odoo itself tests the standard models/actions being customized. Use to judge whether the
+change uses those APIs the way Odoo intends. Do NOT comment on these files; context only.
+
+{_format_code_files(bundle.get('standard_tests', {}), 'python')}
 
 ## Unified diff (the ONLY code you may comment on)
 ```diff

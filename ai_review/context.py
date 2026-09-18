@@ -17,6 +17,7 @@ prompt, and prioritized by relevance to the changed files.
 """
 from __future__ import annotations
 
+import ast
 import base64
 import json
 import re
@@ -35,6 +36,17 @@ MAX_FULL_TOTAL_CHARS = 120_000
 MAX_REF_FILES = 6
 MAX_REF_TOTAL_CHARS = 60_000
 MAX_REF_SYMBOLS = 6
+
+# Standard-Odoo test context: how Odoo itself tests the modules the custom code extends.
+MAX_STD_MODULES = 6
+MAX_STD_FILES = 8
+MAX_STD_TOTAL_CHARS = 70_000
+# Where standard modules live, and the tests/ path patterns to try, in order.
+_ODOO_SRC = [
+    ("odoo/odoo", ["addons/{m}/tests", "odoo/addons/{m}/tests"]),
+    ("odoo/enterprise", ["{m}/tests"]),
+]
+_INHERIT_RE = re.compile(r"_inherits?\s*=\s*(.+)")
 
 # Python definitions whose callers we care about (public symbols added/changed in the diff).
 _DEF_RE = re.compile(r"^\+\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)")
@@ -174,6 +186,78 @@ def _changed_symbols(diff: str) -> list[str]:
         if m and m.group(1) not in seen and not m.group(1).startswith("test_"):
             seen.append(m.group(1))
     return seen[:MAX_REF_SYMBOLS]
+
+
+def _manifest_depends(ref: PRRef, module_root: str, gitref: str) -> list[str]:
+    """Standard modules the custom module builds on (its __manifest__ `depends`)."""
+    for name in ("__manifest__.py", "__openerp__.py"):
+        txt = _fetch_blob(ref.slug, f"{module_root}/{name}", gitref)
+        if not txt:
+            continue
+        try:
+            return list(ast.literal_eval(txt).get("depends", []))
+        except (ValueError, SyntaxError, AttributeError):
+            m = re.search(r"['\"]depends['\"]\s*:\s*\[([^\]]*)\]", txt, re.S)
+            return re.findall(r"['\"]([\w.]+)['\"]", m.group(1)) if m else []
+    return []
+
+
+def _inherited_models(diff: str) -> set[str]:
+    models: set[str] = set()
+    for rhs in _INHERIT_RE.findall(diff):
+        models.update(re.findall(r"['\"]([\w.]+)['\"]", rhs))
+    return models
+
+
+def fetch_standard_tests(ref: PRRef, files: list[dict[str, Any]], diff: str,
+                         head_sha: str, odoo_version: str) -> dict[str, str]:
+    """Fetch the tests of the STANDARD Odoo modules this custom code depends on / extends, so the
+    reviewer sees how Odoo itself exercises those models' APIs. Pulled from odoo/odoo (then
+    enterprise) at ``odoo_version``. Budgeted; modules whose model appears in an `_inherit` first."""
+    roots = []
+    for f in files:
+        r = _module_root(f.get("path") or "")
+        if r and r not in roots:
+            roots.append(r)
+
+    depends: list[str] = []
+    custom = {r.rsplit("/", 1)[-1] for r in roots}
+    for r in roots:
+        for d in _manifest_depends(ref, r, head_sha):
+            if d not in depends and d not in custom and d != "base":
+                depends.append(d)
+    if not depends:
+        return {}
+
+    inherited = _inherited_models(diff)
+    depends.sort(key=lambda m: 0 if any(x == m or x.startswith(m + ".") for x in inherited) else 1)
+
+    collected: dict[str, str] = {}
+    total = 0
+    for module in depends[:MAX_STD_MODULES]:
+        if len(collected) >= MAX_STD_FILES or total >= MAX_STD_TOTAL_CHARS:
+            break
+        for repo, patterns in _ODOO_SRC:
+            listing = None
+            for pat in patterns:
+                got = _gh_json(["api", f"repos/{repo}/contents/{pat.format(m=module)}?ref={odoo_version}"])
+                if isinstance(got, list):
+                    listing = got
+                    break
+            if listing is None:
+                continue  # module not in this repo; try the next
+            for entry in listing:
+                if not entry["name"].endswith(".py") or entry["name"] == "__init__.py":
+                    continue
+                if len(collected) >= MAX_STD_FILES or total >= MAX_STD_TOTAL_CHARS:
+                    break
+                text = _fetch_blob(repo, entry["path"], odoo_version)
+                if text is None:
+                    continue
+                collected[f"{repo}@{odoo_version}:{entry['path']}"] = text[:MAX_FILE_CHARS]
+                total += len(text[:MAX_FILE_CHARS])
+            break  # found the module in this repo; don't check the others
+    return collected
 
 
 def fetch_referencing_files(ref: PRRef, diff: str, base_ref: str,
