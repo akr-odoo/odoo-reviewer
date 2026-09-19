@@ -223,6 +223,14 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     files = bundle["meta"].get("files", [])
     head_sha = bundle["meta"].get("headRefOid", "")
 
+    # Resolve the Odoo version the code targets: explicit flag > version-like base branch >
+    # module manifest version. Drives standard-test fetch AND the reviewer's version-awareness.
+    version = args.odoo_version or (base if _is_version(base) else "")
+    if not version:
+        version = context.detect_odoo_version(ref, files, head_sha)
+    bundle["odoo_version"] = version
+    out(f"  odoo version: {version or 'unknown'}")
+
     if args.no_tests:
         bundle["module_tests"] = {}
         bundle["standard_tests"] = {}
@@ -233,7 +241,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         bundle["module_tests"] = tests
         out(f"  module tests: {len(tests)} file(s)" + (f" — {', '.join(tests)}" if tests else ""))
         # Standard Odoo tests for the modules this custom code depends on / extends.
-        over = args.odoo_version or (base if _is_version(base) else "master")
+        over = version or "master"
         std = context.fetch_standard_tests(ref, files, bundle["diff"], head_sha, over)
         bundle["standard_tests"] = std
         out(f"  standard Odoo tests ({over}): {len(std)} file(s)")
@@ -290,7 +298,8 @@ def cmd_review(args: argparse.Namespace) -> int:
     raw, meta = engine.review(
         bundle, skill_text,
         strategy=args.strategy, model=args.model, workers=args.workers,
-        verify=not args.no_verify, focus_diff=focus_diff, context=args.context, log=out,
+        verify=not args.no_verify, verify_votes=args.verify_votes,
+        focus_diff=focus_diff, context=args.context, log=out,
     )
     if meta["permission_denials"]:
         out(f"  [yellow]⚠ sandbox denials recorded: {meta['permission_denials']}[/yellow]")
@@ -479,6 +488,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="parallel per-unit agents (grouped strategies)")
         sp.add_argument("--no-verify", action="store_true",
                         help="skip the skeptical critic pass that refutes/keeps findings")
+        sp.add_argument("--verify-votes", type=int, default=1,
+                        help="independent refuters per finding; >=2 = majority vote (default 1)")
         sp.add_argument("--min-confidence", type=float, default=0.6,
                         help="suppress findings below this confidence (0-1, default 0.6)")
         sp.add_argument("--incremental", action="store_true",

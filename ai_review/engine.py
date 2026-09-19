@@ -14,10 +14,20 @@ concurrently (they are independent `claude` subprocesses).
 from __future__ import annotations
 
 import json
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from . import claude, prompt
+
+# Distinct angles so independent refuters actually disagree (diversity > redundancy).
+_VERIFY_LENSES = [
+    "Focus: is the claimed code path actually reachable, and does the failure really occur?",
+    "Focus: is every API / field / method the finding relies on correct for THIS Odoo version?",
+    "Focus: is this already handled elsewhere (a guard, standard Odoo behavior, another commit)?",
+    "Focus: would the proposed fix actually be correct and necessary, or is it noise?",
+    "Focus: does the finding misread the diff or assume code that isn't there?",
+]
 
 
 def group_commits(commits_detail: list[dict[str, Any]], by: str) -> list[dict[str, Any]]:
@@ -78,7 +88,13 @@ def _find_phase(bundle, skill_text, strategy, model, workers, focus_diff, costs,
     if strategy == "whole" or not bundle.get("commits_detail"):
         if strategy != "whole":
             log("No per-commit detail in bundle; falling back to whole-PR review.")
-        return _run(system_prompt, prompt.build_user_content(bundle), model, costs), "whole", 0
+        content = prompt.build_user_content(bundle)
+        # Auto-split if a single pass won't fit the model's context (big PR).
+        if not claude.fits(system_prompt, content) and len(group_commits(bundle.get("commits_detail", []), "task")) > 1:
+            log(f"PR too large for one pass (~{len(content)//1000}KB) — auto-switching to per-task.")
+            strategy = "per-task"
+        else:
+            return _run(system_prompt, content, model, costs), "whole", 0
 
     by = "commit" if strategy == "per-commit" else "task"
     units = group_commits(bundle["commits_detail"], by)
@@ -92,6 +108,8 @@ def _find_phase(bundle, skill_text, strategy, model, workers, focus_diff, costs,
     def review_unit(unit: dict) -> dict:
         try:
             raw = _run(system_prompt, prompt.build_group_content(bundle, unit), model, costs)
+        except claude.ClaudeFatalError:
+            raise  # auth/credit — pointless to keep trying the other units; abort the run
         except Exception as exc:  # one unit failing must not abort the whole grouped review
             log(f"  [unit '{unit['label']}' failed: {exc}]")
             return {"label": unit["label"], "summary": "", "findings": []}
@@ -108,14 +126,24 @@ def _find_phase(bundle, skill_text, strategy, model, workers, focus_diff, costs,
     return final, strategy, len(units)
 
 
-def _verify_phase(bundle, findings, model, costs, log, context):
-    """Critic phase — attach a verdict + confidence to each finding by refuting it."""
+def _verify_phase(bundle, findings, model, costs, log, context, votes, workers):
+    """Critic phase — attach a verdict + confidence to each finding by refuting it. With
+    ``votes`` <= 1 this is one batched pass; with ``votes`` >= 2 each finding is judged by that
+    many independent, lens-diverse refuters and the majority verdict wins."""
     if not findings:
         return
+    if votes >= 2:
+        _verify_voting(bundle, findings, model, costs, log, context, votes, workers)
+        return
+
     log(f"Verifying {len(findings)} finding(s) with a skeptical critic pass …")
-    content = prompt.build_verification_content(bundle, findings)
-    raw, meta = claude.run_review(prompt.build_verify_system(context), content, model=model)
-    costs.append(meta)
+    try:
+        content = prompt.build_verification_content(bundle, findings)
+        raw, meta = claude.run_review(prompt.build_verify_system(context), content, model=model)
+        costs.append(meta)
+    except claude.ClaudeError as exc:
+        log(f"  [critic pass failed: {exc}; leaving findings unverified]")
+        return
     verdicts = {
         v["index"]: v for v in raw.get("verdicts", [])
         if isinstance(v, dict) and isinstance(v.get("index"), int)
@@ -137,6 +165,39 @@ def _verify_phase(bundle, findings, model, costs, log, context):
     log(f"  critic: {refuted} refuted, {len(findings) - refuted} kept for review.")
 
 
+def _verify_voting(bundle, findings, model, costs, log, context, votes, workers):
+    """Majority-vote refutation: each finding judged by ``votes`` independent refuters, each with
+    a different lens. Majority verdict wins; verify_confidence = share of the agreeing votes."""
+    log(f"Verifying {len(findings)} finding(s) with {votes} independent refuters each …")
+    sysp = prompt.build_verify_system(context)
+    per_finding = {i: prompt.build_verification_content(bundle, [f]) for i, f in enumerate(findings)}
+    jobs = [(i, v) for i in range(len(findings)) for v in range(votes)]
+
+    def one(job):
+        i, v = job
+        content = f"{per_finding[i]}\n\n{_VERIFY_LENSES[v % len(_VERIFY_LENSES)]}"
+        try:
+            raw, meta = claude.run_review(sysp, content, model=model)
+            costs.append(meta)
+            vds = raw.get("verdicts") or []
+            return i, str((vds[0] if vds else {}).get("verdict", "uncertain")).lower()
+        except claude.ClaudeError:
+            return i, "uncertain"
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        results = list(pool.map(one, jobs))
+
+    for i, f in enumerate(findings):
+        tally = Counter(v for (j, v) in results if j == i)
+        verdict, agree = tally.most_common(1)[0]
+        total = sum(tally.values()) or 1
+        f["verdict"] = verdict
+        f["verify_confidence"] = round(agree / total, 2)
+        f["verify_reason"] = f"{votes}-vote majority {dict(tally)}"
+    refuted = sum(1 for f in findings if f.get("verdict") == "refuted")
+    log(f"  critic ({votes}-vote): {refuted} refuted, {len(findings) - refuted} kept for review.")
+
+
 def review(
     bundle: dict[str, Any],
     skill_text: str,
@@ -145,6 +206,7 @@ def review(
     model: str = claude.DEFAULT_MODEL,
     workers: int = 4,
     verify: bool = True,
+    verify_votes: int = 1,
     focus_diff: str | None = None,
     context: str = "pstech",
     log: Callable[[str], None] = lambda _m: None,
@@ -156,7 +218,7 @@ def review(
         bundle, skill_text, strategy, model, workers, focus_diff, costs, log, context
     )
     if verify:
-        _verify_phase(bundle, raw.get("findings", []), model, costs, log, context)
+        _verify_phase(bundle, raw.get("findings", []), model, costs, log, context, verify_votes, workers)
     return raw, _aggregate(costs, model, strategy=strat_label, units=units, verified=verify)
 
 

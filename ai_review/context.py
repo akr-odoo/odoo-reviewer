@@ -202,6 +202,30 @@ def _manifest_depends(ref: PRRef, module_root: str, gitref: str) -> list[str]:
     return []
 
 
+def detect_odoo_version(ref: PRRef, files: list[dict[str, Any]], head_sha: str) -> str:
+    """Infer the Odoo series (e.g. '19.0') from a touched module's __manifest__ `version`
+    (Odoo manifests are versioned `<odoo>.<x.y.z>`, e.g. 19.0.1.2.0). Returns '' if unclear."""
+    roots = []
+    for f in files:
+        r = _module_root(f.get("path") or "")
+        if r and r not in roots:
+            roots.append(r)
+    for root in roots:
+        for name in ("__manifest__.py", "__openerp__.py"):
+            txt = _fetch_blob(ref.slug, f"{root}/{name}", head_sha)
+            if not txt:
+                continue
+            try:
+                ver = str(ast.literal_eval(txt).get("version", ""))
+            except (ValueError, SyntaxError, AttributeError):
+                m = re.search(r"['\"]version['\"]\s*:\s*['\"]([\d.]+)['\"]", txt)
+                ver = m.group(1) if m else ""
+            parts = ver.split(".")
+            if len(parts) >= 2 and parts[0].isdigit() and 8 <= int(parts[0]) <= 40:
+                return f"{parts[0]}.{parts[1]}"   # the Odoo series prefix
+    return ""
+
+
 def _inherited_models(diff: str) -> set[str]:
     models: set[str] = set()
     for rhs in _INHERIT_RE.findall(diff):

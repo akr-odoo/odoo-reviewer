@@ -226,7 +226,7 @@ def _format_stack(stack: list[dict[str, Any]], current_number: int) -> str:
 
 
 def _content(bundle: dict[str, Any], *, diff: str, commit_lines: str,
-             tasks: list[dict[str, Any]], preamble: str = "") -> str:
+             tasks: list[dict[str, Any]], preamble: str = "", heavy_context: bool = True) -> str:
     """Shared body for the whole-PR and per-group prompts. Line numbers in findings must
     always refer to the FULL PR diff, so every variant shows the module tests + comments and
     asks for PR-relative line numbers; the per-group ``diff`` just narrows what to look at."""
@@ -235,6 +235,21 @@ def _content(bundle: dict[str, Any], *, diff: str, commit_lines: str,
     head = f"{preamble}\n\n" if preamble else ""
     pr_body = sanitize.fence("PR DESCRIPTION", _clean(meta.get("body", ""), 8000) or "(empty)")
     commits_block = sanitize.fence("COMMIT MESSAGES", _clean(commit_lines, 4000) or "(none)")
+    # Heavy, whole-PR context (full files + cross-file refs) is dropped for per-unit passes to
+    # keep each prompt within the model's context window on large PRs.
+    heavy = ""
+    if heavy_context:
+        heavy = f"""
+## Full content of the changed files (post-change, may be truncated) — for whole-function context
+Do NOT comment on lines outside the diff below; use these only to understand surrounding code.
+
+{_format_code_files(bundle.get('full_files', {}), 'python')}
+
+## Other files on the target branch that reference the changed symbols — cross-file impact
+Check whether this change breaks or is inconsistent with these callers/consumers. Context only.
+
+{_format_code_files(bundle.get('referencing_files', {}), 'python')}
+"""
     return f"""\
 {head}# Pull request to review
 
@@ -242,6 +257,12 @@ Repo: {bundle['ref']['owner']}/{bundle['ref']['repo']}  #{bundle['ref']['number'
 Title: {_clean(meta.get('title',''), 300)}
 Author: {_clean(author, 120)}
 Base: {_clean(meta.get('baseRefName',''), 120)}  Head: {_clean(meta.get('headRefName',''), 120)}
+Target Odoo version: {bundle.get('odoo_version') or 'unknown — infer from the code/guidelines'}
+
+VERSION DISCIPLINE: Only flag or suggest APIs, fields, methods and patterns that EXIST in this
+Odoo version. Do NOT recommend legacy or removed features from older versions (e.g. a `visibility`
+field or an ORM helper that no longer exists), and do NOT assume newer-version APIs. If you are not
+sure something exists in this version, say so instead of asserting it.
 
 {_format_stack(bundle.get('stack', []), bundle['ref']['number'])}
 ## PR description
@@ -256,17 +277,7 @@ Base: {_clean(meta.get('baseRefName',''), 120)}  Head: {_clean(meta.get('headRef
 {_ENGAGE_COMMENTS}
 
 {_format_existing_comments(bundle.get('inline_comments', []))}
-
-## Full content of the changed files (post-change, may be truncated) — for whole-function context
-Do NOT comment on lines outside the diff below; use these only to understand surrounding code.
-
-{_format_code_files(bundle.get('full_files', {}), 'python')}
-
-## Other files on the target branch that reference the changed symbols — cross-file impact
-Check whether this change breaks or is inconsistent with these callers/consumers. Context only.
-
-{_format_code_files(bundle.get('referencing_files', {}), 'python')}
-
+{heavy}
 ## Tests in the touched custom module(s) — reference only
 {_format_module_tests(bundle.get('module_tests', {}))}
 
@@ -307,7 +318,7 @@ def build_group_content(bundle: dict[str, Any], group: dict[str, Any]) -> str:
         "Still report line numbers as they appear in the full PR diff."
     )
     return _content(bundle, diff=group["diff"], commit_lines=commit_lines,
-                    tasks=tasks, preamble=preamble)
+                    tasks=tasks, preamble=preamble, heavy_context=False)
 
 
 def build_synthesis_content(bundle: dict[str, Any], group_findings_json: str) -> str:
@@ -315,6 +326,10 @@ def build_synthesis_content(bundle: dict[str, Any], group_findings_json: str) ->
     commit_lines = "\n".join(
         f"- {c.get('messageHeadline','')}" for c in bundle.get("meta", {}).get("commits", [])
     )
+    # On a large PR the full diff won't fit here either; fall back to the findings + commits.
+    diff = bundle.get("diff", "")
+    if len(diff) > 400_000:
+        diff = "(full diff omitted — too large; rely on the per-unit findings and commit list)"
     preamble = (
         "This is the HOLISTIC pass. Below are findings already produced by per-unit reviewers "
         "(as JSON), followed by the full PR context and diff. Your job:\n"
@@ -325,8 +340,8 @@ def build_synthesis_content(bundle: dict[str, Any], group_findings_json: str) ->
         "Return the FINAL consolidated review (summary + findings) in the required JSON schema.\n\n"
         f"## Per-unit findings so far\n```json\n{group_findings_json}\n```"
     )
-    return _content(bundle, diff=bundle.get("diff", ""), commit_lines=commit_lines,
-                    tasks=bundle.get("tasks", []), preamble=preamble)
+    return _content(bundle, diff=diff, commit_lines=commit_lines,
+                    tasks=bundle.get("tasks", []), preamble=preamble, heavy_context=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -382,6 +397,9 @@ def build_verification_content(bundle: dict[str, Any], findings: list[dict[str, 
     return f"""\
 # Verify these findings
 
+Target Odoo version: {bundle.get('odoo_version') or 'unknown'}. REFUTE any finding that suggests a
+legacy/removed or version-inappropriate API/field for this version.
+
 ## Findings to verify (judge each by index)
 ```json
 {findings_json}
@@ -398,7 +416,7 @@ def build_verification_content(bundle: dict[str, Any], findings: list[dict[str, 
 
 ## Unified diff
 ```diff
-{_clean(bundle.get('diff',''))}
+{_clean(bundle.get('diff',''))[:200_000]}
 ```
 """
 
@@ -411,4 +429,4 @@ def build_incremental_content(bundle: dict[str, Any], focus_diff: str, new_commi
         "Report line numbers as they appear in the full PR diff."
     )
     return _content(bundle, diff=focus_diff, commit_lines=new_commit_lines,
-                    tasks=bundle.get("tasks", []), preamble=preamble)
+                    tasks=bundle.get("tasks", []), preamble=preamble, heavy_context=False)
